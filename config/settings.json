@@ -1,0 +1,12 @@
+{
+  "security.workspace.trust.enabled": false,
+  "window.confirmBeforeClose": "never",
+  "telemetry.telemetryLevel": "off",
+  "update.mode": "none",
+  "files.autoSave": "afterDelay",
+  "files.hotExit": "always",
+  "terminal.integrated.defaultProfile.linux": "bash",
+  "terminal.integrated.fontSize": 12,
+  "workbench.startupEditor": "none",
+  "git.enabled": true
+}

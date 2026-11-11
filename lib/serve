@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Foreground VSCodium server runner.
+#
+# This is meant to be the main command of a *dedicated* proot session launched
+# from Termux. proot uses ptrace and runs with --kill-on-exit, so a server
+# started inside your interactive proot shell dies the moment that shell exits.
+# Owning the proot ourselves (with this script as its foreground command) keeps
+# the tracer alive for exactly as long as the server runs.
+
+set -uo pipefail
+
+SERVER_HOME="${CODIUM_SERVER_HOME:-/opt/openvscode-server}"
+HOST="${CODIUM_HOST:-127.0.0.1}"
+PORT="${CODIUM_PORT:-8080}"
+RUN_DIR="${CODIUM_RUN_DIR:-/root/.codium-run}"
+LOGFILE="$RUN_DIR/server.log"
+SERVER_BIN="$SERVER_HOME/bin/openvscode-server"
+
+if [ ! -x "$SERVER_BIN" ]; then
+	echo "codium: server not found at $SERVER_BIN" >&2
+	exit 1
+fi
+
+mkdir -p "$RUN_DIR"
+printf '%s' "$$" >"$RUN_DIR/serve.pid"
+
+cleanup() {
+	rm -f "$RUN_DIR/serve.pid"
+}
+trap cleanup EXIT INT TERM
+
+# Log here rather than to stdout: the parent usually discards our output, and
+# `codium logs` reads this file.
+SHELL=/bin/bash TERM=xterm-256color \
+	exec >>"$LOGFILE" 2>&1 "$SERVER_BIN" \
+	--host "$HOST" --port "$PORT" \
+	--without-connection-token \
+	--disable-telemetry \
+	--accept-server-license-terms

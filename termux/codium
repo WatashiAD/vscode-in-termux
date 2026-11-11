@@ -1,0 +1,95 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# VSCodium launcher for a plain Termux shell.
+#
+# proot runs with --kill-on-exit and traces every process inside it, so a server
+# started from your interactive proot shell is killed the moment that shell
+# exits. To make the server outlive the shell, we give it a *dedicated* proot
+# session whose foreground command is the server itself. Your shell can then go
+# away (or you can switch to the browser) and VSCodium stays up.
+
+PD=/data/data/com.termux/files/usr/bin/proot-distro
+BASE=/data/data/com.termux/files/usr/var/lib/proot-distro/containers
+Codium=/usr/local/bin/codium
+SERVE=/usr/local/lib/codium/serve
+PORT="${CODIUM_PORT:-8080}"
+
+DISTRO=codium-ubuntu
+[ -d "$BASE/$DISTRO" ] || DISTRO=ubuntu
+if [ ! -d "$BASE/$DISTRO" ]; then
+	echo "codium: no proot container found. Installed containers:" >&2
+	ls -1 "$BASE" >&2 2>/dev/null
+	exit 1
+fi
+RUN="$BASE/$DISTRO/rootfs/root/.codium-run"
+SERVE_PID="$RUN/serve.pid"
+HEXP=$(printf '%04X' "$PORT")
+
+port_up() {
+	grep -qE ":${HEXP}[[:space:]]+[0-9A-F]+:[0-9A-F]+[[:space:]]+0A[[:space:]]" \
+		/proc/net/tcp 2>/dev/null && return 0
+	command -v curl >/dev/null 2>&1 || return 1
+	curl -sf -o /dev/null --max-time 3 "http://127.0.0.1:$PORT/" 2>/dev/null
+}
+
+serving() {
+	port_up && return 0
+	[ -f "$SERVE_PID" ] || return 1
+	p=$(cat "$SERVE_PID" 2>/dev/null) || return 1
+	[ -n "$p" ] && [ -d "/proc/$p" ]
+}
+
+do_stop() {
+	pkill -f "/usr/local/lib/codium/[s]erve" 2>/dev/null
+	pkill -f "openvscode-[s]erver --host .*--port $PORT" 2>/dev/null
+	pkill -f "server-main[.]js.*--port $PORT" 2>/dev/null
+	sleep 1
+	pkill -9 -f "server-main[.]js.*--port $PORT" 2>/dev/null
+	rm -f "$SERVE_PID" "$RUN/server.pid" 2>/dev/null
+	echo "codium: server stopped"
+}
+
+ensure_serving() {
+	serving && return 0
+	setsid "$PD" login "$DISTRO" -- "$SERVE" </dev/null >/dev/null 2>&1 &
+	i=0
+	while [ "$i" -lt 90 ]; do
+		port_up && return 0
+		serving && return 0
+		i=$((i + 1))
+		sleep 1
+	done
+	echo "codium: server failed to start." >&2
+	echo "        try: proot-distro login $DISTRO -- $SERVE" >&2
+	return 1
+}
+
+# Already inside proot: a server started here is owned by *your* proot session
+# and will die when it exits. Say so, and still do the right thing.
+if [ -n "$PROOT_L2S_DIR" ] && [ -x "$Codium" ]; then
+	case "${1-}" in
+	stop | status | list | ls | logs) ;;
+	*)
+		echo "codium: note - inside proot the server dies with this session." >&2
+		echo "        Run 'codium' from Termux (outside proot) to keep it alive." >&2
+		;;
+	esac
+	exec "$Codium" "$@"
+fi
+
+case "${1-}" in
+stop)
+	do_stop
+	exit 0
+	;;
+restart)
+	do_stop >/dev/null
+	ensure_serving || exit 1
+	exec "$PD" login "$DISTRO" -- "$Codium" url
+	;;
+status | list | ls | logs)
+	exec "$PD" login "$DISTRO" -- "$Codium" "$@"
+	;;
+esac
+
+ensure_serving || exit 1
+exec "$PD" login "$DISTRO" -- "$Codium" "$@"

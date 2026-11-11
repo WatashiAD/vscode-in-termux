@@ -1,0 +1,327 @@
+#!/usr/bin/env bash
+# codium - launch VSCodium in the browser on localhost, rooted at ~/The Porojects
+
+set -uo pipefail
+
+SERVER_HOME="${CODIUM_SERVER_HOME:-/opt/openvscode-server}"
+SERVER_BIN="$SERVER_HOME/bin/openvscode-server"
+PROJECTS_DIR="${CODIUM_PROJECTS_DIR:-$HOME/The Porojects}"
+RUN_DIR="${CODIUM_RUN_DIR:-$HOME/.codium-run}"
+HOST="${CODIUM_HOST:-127.0.0.1}"
+PORT="${CODIUM_PORT:-8080}"
+PIDFILE="$RUN_DIR/server.pid"
+LOGFILE="$RUN_DIR/server.log"
+PICKER="/usr/local/lib/codium/picker.py"
+
+C_G=$'\033[32m'; C_Y=$'\033[33m'; C_C=$'\033[36m'; C_D=$'\033[90m'; C_R=$'\033[0m'; C_B=$'\033[1m'
+
+die() { printf '%s\n' "$*" >&2; exit 1; }
+
+port_open() { (exec 3<>"/dev/tcp/$HOST/$PORT") 2>/dev/null; }
+
+server_pid() {
+  local p
+  if [ -f "$PIDFILE" ]; then
+    p=$(cat "$PIDFILE" 2>/dev/null)
+    if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then
+      printf '%s' "$p"
+      return 0
+    fi
+  fi
+  if [ -f "$RUN_DIR/serve.pid" ]; then
+    p=$(cat "$RUN_DIR/serve.pid" 2>/dev/null)
+    if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then
+      printf '%s' "$p"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+ensure_dirs() { mkdir -p "$PROJECTS_DIR" "$RUN_DIR"; }
+
+seed_settings() {
+  local s="$HOME/.codium/User/settings.json"
+  [ -f "$s" ] && return 0
+  mkdir -p "$(dirname "$s")"
+  cat >"$s" <<'JSON'
+{
+  "security.workspace.trust.enabled": false,
+  "window.confirmBeforeClose": "never",
+  "telemetry.telemetryLevel": "off",
+  "update.mode": "none",
+  "files.autoSave": "afterDelay",
+  "files.hotExit": "always",
+  "terminal.integrated.defaultProfile.linux": "bash",
+  "terminal.integrated.fontSize": 12,
+  "workbench.startupEditor": "none",
+  "git.enabled": true
+}
+JSON
+}
+
+ensure_patch() {
+  local main="$SERVER_HOME/out/server-main.js"
+  [ -f "$main" ] || return 0
+  grep -q 'x=mn,D=this.f.args\["enable-proposed-api"\]' "$main" 2>/dev/null && return 0
+  [ -f "$main.orig" ] || cp "$main" "$main.orig" 2>/dev/null
+  python3 - "$main" <<'PY' 2>/dev/null
+import sys
+p = sys.argv[1]
+s = open(p, encoding="utf8", errors="replace").read()
+old = 'x={},D=this.f.args["enable-proposed-api"]'
+new = 'x=mn,D=this.f.args["enable-proposed-api"]'
+if new in s:
+    raise SystemExit(0)
+if s.count(old) != 1:
+    raise SystemExit(1)
+open(p, "w", encoding="utf8").write(s.replace(old, new))
+PY
+  if [ $? -eq 0 ]; then
+    printf '%s\n' "${C_D}re-applied VSCodium branding patch${C_R}"
+  else
+    printf '%s\n' "${C_Y}codium: could not patch $main (branding may show as 'Code')${C_R}" >&2
+  fi
+}
+
+start_server() {
+  ensure_dirs
+  if server_pid >/dev/null; then
+    if port_open; then return 0; fi
+  fi
+  rm -f "$PIDFILE"
+  ensure_patch
+  SHELL=/bin/bash TERM=xterm-256color \
+  setsid "$SERVER_BIN" \
+    --host "$HOST" --port "$PORT" \
+    --without-connection-token \
+    --disable-telemetry \
+    --accept-server-license-terms \
+    </dev/null >>"$LOGFILE" 2>&1 &
+  local pid=$!
+  printf '%s' "$pid" >"$PIDFILE"
+  disown 2>/dev/null || true
+
+  local i
+  for i in $(seq 1 90); do
+    if port_open; then
+      return 0
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      printf '%s\n' "${C_R}codium: server exited during startup${C_R}" >&2
+      printf '%s\n' "--- last log lines ---" >&2
+      tail -n 20 "$LOGFILE" >&2 2>/dev/null
+      rm -f "$PIDFILE"
+      return 1
+    fi
+    sleep 1
+  done
+  printf '%s\n' "${C_R}codium: server did not come up on $HOST:$PORT${C_R}" >&2
+  return 1
+}
+
+stop_server() {
+  local stopped=0 p
+  if p=$(server_pid); then
+    kill "$p" 2>/dev/null
+    local i
+    for i in $(seq 1 20); do
+      kill -0 "$p" 2>/dev/null || break
+      sleep 0.5
+    done
+    kill -9 "$p" 2>/dev/null
+    stopped=1
+    printf '%s\n' "${C_D}stopped codium server (pid $p)${C_R}"
+  fi
+  if pgrep -f "server-main[.]js.*--port $PORT" >/dev/null 2>&1; then
+    pkill -f "server-main[.]js.*--port $PORT" 2>/dev/null
+    sleep 1
+    pkill -9 -f "server-main[.]js.*--port $PORT" 2>/dev/null
+    stopped=1
+    printf '%s\n' "${C_D}cleaned up leftover server processes on port $PORT${C_R}"
+  fi
+  if pgrep -f "/usr/local/lib/codium/[s]erve" >/dev/null 2>&1; then
+    pkill -f "/usr/local/lib/codium/[s]erve" 2>/dev/null
+    sleep 1
+    stopped=1
+    printf '%s\n' "${C_D}stopped serving proot session${C_R}"
+  fi
+  [ "$stopped" -eq 1 ] || printf '%s\n' "${C_D}no running codium server found${C_R}"
+  rm -f "$PIDFILE"
+}
+
+folder_url() {
+  python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))' "$1"
+}
+
+open_target() {
+  local target="$1"
+  case "$target" in
+    -h|--help) usage; exit 0 ;;
+    list|ls) list_projects; exit 0 ;;
+    stop) stop_server; exit 0 ;;
+    restart) stop_server; start_server || exit 1; print_url "$PROJECTS_DIR"; exit 0 ;;
+    status) status; exit 0 ;;
+    logs) tail -n 100 -f "$LOGFILE"; exit 0 ;;
+    url) print_url "$PROJECTS_DIR"; exit 0 ;;
+  esac
+
+  case "/$target/" in
+    */../*) die "codium: invalid target: $target" ;;
+  esac
+  [ -n "$target" ] || die "codium: empty target"
+
+  local dir
+  if [ -d "$target" ]; then
+    dir=$(cd "$target" 2>/dev/null && pwd) || die "codium: cannot enter $target"
+  elif [ "${target#*/}" = "$target" ]; then
+    dir="$PROJECTS_DIR/$target"
+    ensure_dirs
+    if [ ! -d "$dir" ]; then
+      mkdir -p "$dir" || die "codium: cannot create $dir"
+      printf '%s\n' "${C_G}created${C_R} $dir"
+    fi
+    dir=$(cd "$dir" && pwd) || die "codium: cannot enter $dir"
+  else
+    local parent
+    parent=$(dirname -- "$target")
+    [ -d "$parent" ] || die "codium: no such directory: $parent"
+    dir="$parent/$(basename -- "$target")"
+    if [ ! -d "$dir" ]; then
+      mkdir -p "$dir" || die "codium: cannot create $dir"
+      printf '%s\n' "${C_G}created${C_R} $dir"
+    fi
+    dir=$(cd "$dir" && pwd) || die "codium: cannot enter $dir"
+  fi
+
+  [ -d "$dir" ] || die "codium: not a directory: $dir"
+  seed_settings
+  start_server || exit 1
+  print_url "$dir"
+}
+
+pick_and_open() {
+  ensure_dirs
+  local out
+  out=$(python3 "$PICKER")
+  local rc=$?
+  [ $rc -eq 0 ] || exit 0
+  [ -n "$out" ] || exit 0
+  local action name
+  IFS=$'\t' read -r action name <<<"$out"
+  case "$action" in
+    open)
+      open_target "$PROJECTS_DIR/$name"
+      ;;
+    create)
+      local dir="$PROJECTS_DIR/$name"
+      printf '%s\n' "${C_Y}No project named${C_R} ${C_B}$name${C_R} ${C_Y}- creating it.${C_R}"
+      mkdir -p "$dir" || die "codium: cannot create $dir"
+      printf '%s\n' "${C_G}created${C_R} $dir"
+      open_target "$dir"
+      ;;
+  esac
+}
+
+print_url() {
+  local dir="$1"
+  local enc hostport
+  enc=$(folder_url "$dir")
+  if [ "$HOST" = "0.0.0.0" ] || [ "$HOST" = "::" ]; then
+    hostport="localhost:$PORT"
+  else
+    hostport="$HOST:$PORT"
+  fi
+  printf '\n'
+  printf '  %sVSCodium%s is running\n' "$C_G" "$C_R"
+  printf '\n'
+  printf '  %sOpen%s   %s%shttp://%s/?folder=%s%s\n' "$C_D" "$C_R" "$C_C" "$C_B" "$hostport" "$enc" "$C_R"
+  printf '  %sFolder%s  %s\n' "$C_D" "$C_R" "$dir"
+  printf '  %sStop%s   codium stop\n' "$C_D" "$C_R"
+  printf '\n'
+}
+
+list_projects() {
+  ensure_dirs
+  printf '%s\n' "${C_D}projects in $PROJECTS_DIR${C_R}"
+  local found=0 d
+  for d in "$PROJECTS_DIR"/*; do
+    [ -d "$d" ] || continue
+    found=1
+    printf '  %s%s%s\n' "$C_C" "$(basename -- "$d")" "$C_R"
+  done
+  [ $found -eq 1 ] || printf '  %s(none yet - run codium and type a name)%s\n' "$C_D" "$C_R"
+}
+
+status() {
+  local p
+  if p=$(server_pid); then
+    printf '%s\n' "${C_G}running${C_R}  pid $p  http://$HOST:$PORT"
+  elif port_open; then
+    printf '%s\n' "${C_G}running${C_R}  http://$HOST:$PORT  ${C_D}(unmanaged)${C_R}"
+  else
+    printf '%s\n' "${C_Y}not running${C_R}"
+  fi
+  printf '%s\n' "${C_D}projects dir: $PROJECTS_DIR${C_R}"
+  printf '%s\n' "${C_D}log:         $LOGFILE${C_R}"
+}
+
+usage() {
+  cat <<EOF
+${C_B}codium${C_R} - VSCodium in your browser
+
+  codium                  pick a project (type to search, Enter to open/create)
+  codium <name>           open ~/The Porojects/<name>, creating it if missing
+  codium <path>           open any folder
+  codium .                open the current directory
+
+  codium list             list projects
+  codium status           show server status
+  codium stop             stop the server
+  codium restart          restart the server
+  codium logs             tail the server log
+
+  --port N    --host H    --foreground    --no-create
+
+  projects dir : $PROJECTS_DIR
+  url          : http://$HOST:$PORT
+EOF
+}
+
+main() {
+  [ -x "$SERVER_BIN" ] || die "codium: server not found at $SERVER_BIN"
+  case "${1-}" in
+    -h|--help|help) usage; exit 0 ;;
+  esac
+
+  local args=() target="" nocreate=0 foreground=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --port) PORT="$2"; shift 2 ;;
+      --host) HOST="$2"; shift 2 ;;
+      --no-create) nocreate=1; shift ;;
+      --foreground|-f) foreground=1; shift ;;
+      --) shift; while [ $# -gt 0 ]; do args+=("$1"); shift; done ;;
+      -*) die "codium: unknown option $1 (try codium --help)" ;;
+      *) args+=("$1"); shift ;;
+    esac
+  done
+
+  if [ "${#args[@]}" -gt 0 ]; then
+    target="${args[0]}"
+  elif [ "$foreground" -eq 1 ]; then
+    ensure_dirs; seed_settings
+    exec "$SERVER_BIN" --host "$HOST" --port "$PORT" --without-connection-token \
+      --disable-telemetry --accept-server-license-terms
+  else
+    pick_and_open
+    return 0
+  fi
+
+  if [ "$nocreate" -eq 1 ] && [ ! -d "$target" ]; then
+    die "codium: no such project: $target"
+  fi
+  open_target "$target"
+}
+
+main "$@"
