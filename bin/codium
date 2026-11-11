@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# codium - launch VSCodium in the browser on localhost, rooted at ~/The Porojects
+# codium - launch VSCodium in the browser on localhost, rooted at ~/The Projects
 
 set -uo pipefail
 
 SERVER_HOME="${CODIUM_SERVER_HOME:-/opt/openvscode-server}"
 SERVER_BIN="$SERVER_HOME/bin/openvscode-server"
-PROJECTS_DIR="${CODIUM_PROJECTS_DIR:-$HOME/The Porojects}"
+PROJECTS_DIR="${CODIUM_PROJECTS_DIR:-$HOME/The Projects}"
 RUN_DIR="${CODIUM_RUN_DIR:-$HOME/.codium-run}"
 HOST="${CODIUM_HOST:-127.0.0.1}"
 PORT="${CODIUM_PORT:-8080}"
@@ -271,7 +271,7 @@ usage() {
 ${C_B}codium${C_R} - VSCodium in your browser
 
   codium                  pick a project (type to search, Enter to open/create)
-  codium <name>           open ~/The Porojects/<name>, creating it if missing
+  codium <name>           open ~/The Projects/<name>, creating it if missing
   codium <path>           open any folder
   codium .                open the current directory
 

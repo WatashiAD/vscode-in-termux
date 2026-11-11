@@ -9,7 +9,7 @@ import termios
 import tty
 
 PROJECTS_DIR = os.environ.get("CODIUM_PROJECTS_DIR") or os.path.join(
-    os.path.expanduser("~"), "The Porojects"
+    os.path.expanduser("~"), "The Projects"
 )
 
 ESC = "\x1b"

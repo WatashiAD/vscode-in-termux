@@ -2,7 +2,7 @@
 
 VSCodium in your browser, on Termux. One command starts a VS Code web IDE from a
 proot-distro container on your phone, served on `http://127.0.0.1:8080`, with a
-fuzzy project picker rooted at `~/The Porojects`.
+fuzzy project picker rooted at `~/The Projects`.
 
 ## How it fits together
 
@@ -59,7 +59,7 @@ dies with your session).
 
 ```text
 codium                  pick a project (type to search, Enter to open/create)
-codium <name>           open ~/The Porojects/<name>, creating it if missing
+codium <name>           open ~/The Projects/<name>, creating it if missing
 codium <path>           open any folder
 codium .                open the current directory
 
@@ -77,7 +77,7 @@ scripts were written against:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `CODIUM_PROJECTS_DIR` | `~/The Porojects` | Root of the project picker |
+| `CODIUM_PROJECTS_DIR` | `~/The Projects` | Root of the project picker |
 | `CODIUM_SERVER_HOME` | `/opt/openvscode-server` | Where the server lives |
 | `CODIUM_HOST` | `127.0.0.1` | Server bind address |
 | `CODIUM_PORT` | `8080` | Server port |
